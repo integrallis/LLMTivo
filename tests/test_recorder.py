@@ -306,3 +306,24 @@ def test_an_empty_secret_is_ignored():
     rec = Recorder(store, "leak::empty", mode=Mode.RECORD, secrets=["", None])
     rec.call({"model": "m", "messages": [{"role": "user", "content": "hello"}]}, lambda: {"ok": 1})
     assert "hello" in str(rec.cassette.load()[0].request)
+
+
+def test_a_chat_fingerprint_is_unchanged_by_the_tool_fields():
+    """Tool name and args enter the digest only when present. A chat call must hash exactly as it
+    did before tools existed as a concept — otherwise adding the feature silently invalidates every
+    cassette already committed and bills a re-record for prompts that never changed."""
+    from llmtivo.keys import fingerprint
+
+    chat = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
+    assert fingerprint(chat) == "ca84ac18369fb031", "the chat digest moved"
+
+
+def test_a_tool_call_is_addressed_by_its_name_and_arguments():
+    from llmtivo.keys import fingerprint
+
+    a = fingerprint({"tool": "search", "args": {"q": "kotlin"}})
+    b = fingerprint({"tool": "search", "args": {"q": "swift"}})
+    c = fingerprint({"tool": "fetch", "args": {"q": "kotlin"}})
+    assert a != b, "different arguments are a different question"
+    assert a != c, "a different tool is a different question"
+    assert a == fingerprint({"tool": "search", "args": {"q": "kotlin"}}), "and it is stable"

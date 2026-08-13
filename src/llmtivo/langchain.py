@@ -43,6 +43,12 @@ from llmtivo.recorder import Codec, Recorder
 #: call twice.
 _METHODS = ("invoke", "ainvoke", "stream", "astream")
 
+#: The tool entry points, both defined on `BaseTool`. `run`/`arun` are deliberately absent:
+#: `BaseTool.invoke` calls `self.run(...)`, so intercepting both layers would record every tool call
+#: twice. `StructuredTool` overrides `ainvoke` but delegates down to the base, so the base seam
+#: still catches async tools.
+_TOOL_METHODS = ("invoke", "ainvoke")
+
 #: Marks which message class a recorded payload came from, so replay rebuilds the same type. A
 #: chunk replayed as a whole message breaks `+` concatenation in streaming consumers.
 _TYPE_KEY = "__lc_class__"
@@ -69,6 +75,26 @@ def langchain_request(
     for key in ("tools", "tool_choice", "response_format", "stop"):
         if key in kwargs:
             request[key] = kwargs[key]
+    return request
+
+
+def tool_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """The request dict for a TOOL execution.
+
+    A tool call is addressed by the tool's name and the arguments it was given, both of which go
+    into the fingerprint: different arguments are a different question, and the recorded answer must
+    not be served for them.
+    """
+    request: dict[str, Any] = {"tool": str(getattr(instance, "name", "") or "")}
+    if args:
+        payload = args[0]
+        # LangGraph hands a tool either its argument mapping or the whole ToolCall; the arguments
+        # are what identifies the call either way
+        if isinstance(payload, dict) and "args" in payload and "name" in payload:
+            payload = payload["args"]
+        request["args"] = payload
+    if kwargs:
+        request["kwargs"] = kwargs
     return request
 
 
@@ -120,7 +146,24 @@ def patched_langchain(recorder: Recorder) -> Iterator[Recorder]:
             "llmtivo.intercept.patched to name the client yourself"
         ) from exc
 
-    targets = [(BaseChatModel, name) for name in _METHODS if hasattr(BaseChatModel, name)]
+    targets: list[tuple[Any, ...]] = [
+        (BaseChatModel, name, langchain_request)
+        for name in _METHODS
+        if hasattr(BaseChatModel, name)
+    ]
+
+    # Tool EXECUTIONS go on the same tape. The model saying "call search" is recorded as `tool_calls`
+    # on the message, but the framework then actually RUNS that tool, and that is not a model call —
+    # it never reaches the chat-model seam. A tool that hits an API is billed and non-deterministic
+    # on every replay, and its result feeds the next prompt, so a drifting tool invalidates the tape
+    # of a model that behaved identically. One ordinal sequence keeps model and tool in real order.
+    with contextlib.suppress(ImportError):
+        from langchain_core.tools import BaseTool
+
+        targets += [
+            (BaseTool, name, tool_request) for name in _TOOL_METHODS if hasattr(BaseTool, name)
+        ]
+
     with patched_all(
         targets, recorder, build_request=langchain_request, codec=MESSAGE_CODEC
     ) as rec:

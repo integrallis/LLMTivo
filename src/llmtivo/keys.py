@@ -10,6 +10,9 @@ and not when something incidental does:
   * the model name — replaying Sonnet's answer for a Haiku call is a different experiment
   * the messages' roles and content
   * the tool/function names offered, if any — but not their full schemas, which churn
+  * for a TOOL EXECUTION, the tool's name and the arguments it was given — without these every
+    tool call digests identically, and the answer recorded for one set of arguments would be
+    served for any other
 
 Deliberately excluded: temperature, max_tokens, timeouts, api keys, request ids, and any other
 transport or sampling detail. A test that retunes temperature has not changed the question it asked.
@@ -72,10 +75,31 @@ def _tool_names(request: dict[str, Any]) -> list[str]:
 
 def fingerprint(request: dict[str, Any]) -> str:
     """A stable digest of the request's MEANING (see the module docstring for what counts)."""
-    material = {
+    material: dict[str, Any] = {
         "model": str(request.get("model", "")),
         "messages": _messages_of(request),
         "tools": _tool_names(request),
     }
+    # added only when present, so a chat call's digest is unchanged by tools existing as a concept
+    # — a gratuitous change here would invalidate every cassette already committed
+    if "tool" in request:
+        material["tool"] = str(request.get("tool", ""))
+        material["args"] = _stable(request.get("args"))
+        material["kwargs"] = _stable(request.get("kwargs"))
+    return _digest(material)
+
+
+def _stable(value: Any) -> Any:
+    """A JSON-safe, order-stable view of tool arguments."""
+    if isinstance(value, dict):
+        return {str(k): _stable(v) for k, v in sorted(value.items())}
+    if isinstance(value, (list, tuple)):
+        return [_stable(v) for v in value]
+    if isinstance(value, (str, int, float, bool, type(None))):
+        return value
+    return str(value)
+
+
+def _digest(material: dict[str, Any]) -> str:
     blob = json.dumps(material, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:WIDTH]

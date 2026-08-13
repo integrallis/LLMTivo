@@ -148,3 +148,118 @@ def test_an_api_key_never_reaches_the_tape():
         model_of("ok").invoke("q", api_key="sk-super-secret")
 
     assert "sk-super-secret" not in str(rec.cassette.load()[0].request)
+
+
+# --- tool executions -------------------------------------------------------------------------
+#
+# The model saying "call search" is recorded as `tool_calls` on the message. The framework then
+# ACTUALLY RUNS that tool, and that is not a model call — it never reaches the chat-model seam. A
+# tool that hits an API is billed and non-deterministic on every replay, and its result feeds the
+# next prompt, so a drifting tool invalidates the tape of a model that behaved identically.
+
+from langchain_core.tools import BaseTool, tool  # noqa: E402
+
+
+def counting_tool():
+    """A tool that records how many times it really ran."""
+    calls = {"n": 0}
+
+    @tool
+    def search(q: str) -> str:
+        """Search for something."""
+        calls["n"] += 1
+        return "result for " + q
+
+    return search, calls
+
+
+def test_a_tool_execution_replays_without_running_the_tool():
+    search, calls = counting_tool()
+    store = MemoryStore()
+
+    with patched_langchain(Recorder(store, "tool::once", mode=Mode.RECORD)):
+        live = search.invoke({"q": "kotlin"})
+    assert calls["n"] == 1
+
+    with patched_langchain(Recorder(store, "tool::once", mode=Mode.REPLAY)):
+        replayed = search.invoke({"q": "kotlin"})
+
+    assert replayed == live == "result for kotlin"
+    assert calls["n"] == 1, "replay ran the tool for real — the side effect happened again"
+
+
+def test_a_tool_is_recorded_ONCE_not_twice():
+    """`BaseTool.invoke` calls `self.run(...)`, so intercepting both layers would record every tool
+    call twice, double the ordinals, and replay the inner recording to the outer caller."""
+    search, _ = counting_tool()
+    store = MemoryStore()
+    with patched_langchain(Recorder(store, "tool::single", mode=Mode.RECORD)) as rec:
+        search.invoke({"q": "x"})
+    assert rec.stats.recorded == 1
+    assert [i.ordinal for i in rec.cassette.load()] == [1]
+
+
+def test_an_async_tool_is_recorded():
+    """`StructuredTool` OVERRIDES `ainvoke` — verified to delegate down to `BaseTool.ainvoke`, so
+    the base seam catches it. If it ever stopped delegating, async tools would record nothing."""
+    ran = {"n": 0}
+
+    @tool
+    async def fetch(q: str) -> str:
+        """Fetch."""
+        ran["n"] += 1
+        return "fetched " + q
+
+    store = MemoryStore()
+    with patched_langchain(Recorder(store, "tool::async", mode=Mode.RECORD)) as rec:
+        live = asyncio.run(fetch.ainvoke({"q": "a"}))
+    assert rec.stats.recorded == 1 and ran["n"] == 1
+
+    with patched_langchain(Recorder(store, "tool::async", mode=Mode.REPLAY)):
+        assert asyncio.run(fetch.ainvoke({"q": "a"})) == live
+    assert ran["n"] == 1, "replay re-ran the async tool"
+
+
+def test_model_and_tool_calls_share_one_ordinal_sequence():
+    """The agentic loop is model -> tool -> model. One tape in real order is what makes it an
+    account of the RUN rather than two unrelated fragments."""
+    search, _ = counting_tool()
+    store = MemoryStore()
+
+    with patched_langchain(Recorder(store, "tool::loop", mode=Mode.RECORD)) as rec:
+        m = model_of("thinking", "done")
+        m.invoke("start")
+        search.invoke({"q": "kmp"})
+        m.invoke("finish")
+
+    tape = rec.cassette.load()
+    assert [i.ordinal for i in tape] == [1, 2, 3]
+    assert tape[1].request.get("tool") == "search", f"call 2 should be the tool: {tape[1].request}"
+    assert tape[1].request.get("args") == {"q": "kmp"}
+
+
+def test_the_tool_name_and_args_are_fingerprinted():
+    """Different arguments are a different question, so the recorded answer must not be served."""
+    search, _ = counting_tool()
+    store = MemoryStore()
+    with patched_langchain(Recorder(store, "tool::fp", mode=Mode.RECORD)):
+        search.invoke({"q": "first"})
+
+    with pytest.raises(Exception, match="recorded for request"):  # FingerprintDrift
+        with patched_langchain(Recorder(store, "tool::fp", mode=Mode.REPLAY)):
+            search.invoke({"q": "SECOND — a different question"})
+
+
+def test_a_tool_defined_inside_the_code_under_test_is_covered():
+    """Patching the BASE class, not an instance, is what reaches a tool an agent builds itself."""
+    store = MemoryStore()
+    with patched_langchain(Recorder(store, "tool::inner", mode=Mode.RECORD)) as rec:
+
+        @tool
+        def built_later(x: str) -> str:
+            """Made after the patch was installed."""
+            return "late:" + x
+
+        assert isinstance(built_later, BaseTool)
+        built_later.invoke({"x": "y"})
+    assert rec.stats.recorded == 1

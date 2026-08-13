@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
 
@@ -153,7 +153,7 @@ def patched(
 
 @contextmanager
 def patched_all(
-    targets: list[tuple[Any, str]],
+    targets: Sequence[tuple[Any, ...]],
     recorder: Recorder,
     *,
     build_request: RequestBuilder = default_request,
@@ -170,13 +170,18 @@ def patched_all(
     did not, so a mixed run recorded a coroutine object.
     """
     with contextlib.ExitStack() as stack:
-        for target, method in targets:
+        for entry in targets:
+            # a target may carry its OWN request builder as a third element: one tape can span
+            # kinds of call whose arguments look nothing alike — a chat model takes messages, a
+            # tool takes named arguments — and forcing one shape onto both records neither well
+            target, method = entry[0], entry[1]
+            builder = entry[2] if len(entry) > 2 else build_request
             stack.enter_context(
                 patched(
                     target,
                     method,
                     recorder,
-                    build_request=build_request,
+                    build_request=builder,
                     codec=codec,
                     _finish=False,
                 )

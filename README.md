@@ -197,6 +197,33 @@ compresses independently. Measured on the same corpus, a recorded tape was 21.7 
 **only after a clean finish**, so a recording that died halfway is never rewritten as if complete.
 Durable while recording, compact at rest.
 
+### Tool calls, both meanings
+
+A model asking for a tool and a tool actually running are two different events, and both are on the
+tape.
+
+The **request** is part of the message: `tool_calls` survive the round trip intact, so an agentic
+loop replays the branch it recorded rather than one where the model suddenly stopped calling tools.
+
+The **execution** is not a model call at all — the framework runs the function, and nothing about
+that reaches a chat-model seam. It is recorded anyway, because a tool that hits an API is billed and
+non-deterministic on every replay, and its result feeds the next prompt: a drifting tool invalidates
+the tape of a model that behaved identically. Replaying serves the recorded result **without running
+the tool**, so side effects happen once, when recording.
+
+A tool execution is addressed by the tool's name and the arguments it was given, both fingerprinted —
+different arguments are a different question, and the recorded answer is not served for them.
+
+`BaseTool.run`/`arun` are deliberately left alone: `invoke` calls `run` underneath, so intercepting
+both layers would record every tool call twice.
+
+Verified end to end through a real agent — one tape, in real order:
+
+```
+tape: [(1, 'model:scripted'), (2, 'lookup'), (3, 'model:scripted')]
+replay -> 3 replayed, tool ran again: NO, run reproduced identically
+```
+
 ## The network guard
 
 `REPLAY` raises on a miss **at the seam**. That covers every client LLMTivo was pointed at, and
