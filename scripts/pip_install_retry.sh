@@ -34,7 +34,12 @@ until curl -fsSL "$INDEX" 2>/dev/null | grep -q "llmtivo-${VERSION}"; do
 done
 echo "✅ indexed after ${waited}s"
 
+# --refresh-package: uv caches index metadata, and setup-uv RESTORES that cache between runs, so a
+# version published seconds ago stays invisible to the resolver even though the index itself serves
+# it — the poll above proves the index is fine while `uv pip install` still reports it unresolvable.
+# Refreshing just this package keeps every other dependency served from cache.
 uv pip install --system \
+  --refresh-package llmtivo \
   --index-strategy unsafe-best-match \
   --extra-index-url https://test.pypi.org/simple/ \
   "$@" "$SPEC"
