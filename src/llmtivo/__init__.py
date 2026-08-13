@@ -30,7 +30,7 @@ from llmtivo.modes import CassetteMiss, FingerprintDrift, Mode
 from llmtivo.recorder import Recorder, Stats
 from llmtivo.store import CassetteStore, FileStore, MemoryStore
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "Cassette",

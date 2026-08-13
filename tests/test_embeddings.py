@@ -118,3 +118,34 @@ def test_chat_and_embeddings_share_one_tape_in_call_order():
     tape = rec.cassette.load()
     assert [i.ordinal for i in tape] == [1, 2]
     assert tape[0].request.get("embedding") is True, tape[0].request
+
+
+def test_an_embeddings_class_IMPORTED_LATER_is_still_intercepted():
+    """Walking `__subclasses__()` at patch time only sees what is already imported.
+
+    Providers are imported lazily on purpose — `from langchain_openai import OpenAIEmbeddings`
+    inside the function that embeds, so importing the module needs no key. That class therefore does
+    not exist when the patch goes in, the walk finds nothing, and every embedding reaches the
+    network while the chat calls all replay. Classes defined DURING the block have to be caught too.
+    """
+    store = MemoryStore()
+    with patched_langchain(Recorder(store, "emb::late", mode=Mode.RECORD)) as rec:
+
+        class LateEmbeddings(Embeddings):  # defined after the patch, as a lazy import would be
+            ran = 0
+
+            def embed_documents(self, texts: list[str]) -> list[list[float]]:
+                LateEmbeddings.ran += 1
+                return [[1.0, 2.0] for _ in texts]
+
+            def embed_query(self, text: str) -> list[float]:
+                return self.embed_documents([text])[0]
+
+        vector = LateEmbeddings().embed_query("late import")
+
+    assert rec.stats.recorded == 1, "a lazily imported embeddings class escaped the seam"
+    assert LateEmbeddings.ran == 1
+
+    with patched_langchain(Recorder(store, "emb::late", mode=Mode.REPLAY)):
+        assert LateEmbeddings().embed_query("late import") == vector
+    assert LateEmbeddings.ran == 1, "replay re-ran the lazily imported embedder"

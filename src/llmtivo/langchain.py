@@ -35,7 +35,7 @@ import contextlib
 from collections.abc import Iterator
 from typing import Any
 
-from llmtivo.intercept import patched_all
+from llmtivo.intercept import patched, patched_all
 from llmtivo.recorder import Codec, Recorder
 
 #: The public entry points, all four defined on `BaseChatModel` itself. `batch` is deliberately
@@ -124,35 +124,68 @@ def embedding_request(
     }
 
 
-def _embedding_targets() -> list[tuple[Any, ...]]:
-    """Every loaded `Embeddings` implementation, and the methods it actually defines.
+def _embedding_classes(root: type) -> Iterator[type]:
+    """Every loaded implementation under `root`, depth-first."""
+    for sub in root.__subclasses__():
+        yield sub
+        yield from _embedding_classes(sub)
 
-    Walks the subclass tree because the methods are overridden rather than inherited: patching the
-    abstract base would intercept nothing. Only methods a class defines ITSELF are patched, so a
-    subclass that inherits its parent's implementation is covered once, at the parent.
+
+@contextlib.contextmanager
+def _patched_embeddings(recorder: Recorder, stack: contextlib.ExitStack) -> Iterator[None]:
+    """Intercept every `Embeddings` implementation, including ones imported LATER.
+
+    The methods are overridden rather than inherited — unlike `BaseChatModel.invoke` — so the
+    abstract base is not the seam and each implementation has to be patched.
+
+    Walking `__subclasses__()` alone is not enough. Providers are imported lazily on purpose
+    (`from langchain_openai import OpenAIEmbeddings` inside the function that embeds, so importing
+    the module needs no key), which means the class does not exist when the patch goes in: the walk
+    finds nothing and every embedding reaches the network while the chat calls all replay. So
+    subclass CREATION is hooked for the duration too, and a class defined during the block is
+    patched as it appears.
     """
-    with contextlib.suppress(ImportError):
+    try:
         from langchain_core.embeddings import Embeddings
+    except ImportError:  # pragma: no cover - embeddings are optional
+        yield
+        return
 
-        seen: set[type] = set()
-        targets: list[tuple[Any, ...]] = []
+    def intercept(cls: type) -> None:
+        for name in _EMBEDDING_METHODS:
+            attr = cls.__dict__.get(name)
+            if attr is not None and not getattr(attr, "__llmtivo_patched__", False):
+                stack.enter_context(
+                    patched(
+                        cls,
+                        name,
+                        recorder,
+                        build_request=embedding_request,
+                        codec=MESSAGE_CODEC,
+                        _finish=False,
+                    )
+                )
 
-        def walk(cls: type) -> None:
-            for sub in cls.__subclasses__():
-                if sub in seen:
-                    continue
-                seen.add(sub)
-                for name in _EMBEDDING_METHODS:
-                    if name in sub.__dict__:
-                        targets.append((sub, name, embedding_request))
-                walk(sub)
+    for cls in [Embeddings, *_embedding_classes(Embeddings)]:
+        intercept(cls)
 
-        walk(Embeddings)
-        for name in _EMBEDDING_METHODS:  # the base's own defaults, for direct subclasses of it
-            if name in Embeddings.__dict__:
-                targets.append((Embeddings, name, embedding_request))
-        return targets
-    return []
+    previous = Embeddings.__dict__.get("__init_subclass__")
+
+    def on_new_subclass(cls: type, /, **kwargs: Any) -> None:
+        if previous is not None:
+            previous.__func__(cls, **kwargs)
+        intercept(cls)
+
+    # setattr, not assignment: `__init_subclass__` is an implicit classmethod slot and a direct
+    # assignment is not expressible in the type system
+    setattr(Embeddings, "__init_subclass__", classmethod(on_new_subclass))  # noqa: B010
+    try:
+        yield
+    finally:
+        if previous is not None:
+            setattr(Embeddings, "__init_subclass__", previous)  # noqa: B010
+        else:
+            delattr(Embeddings, "__init_subclass__")
 
 
 def _encode(response: Any) -> Any:
@@ -221,9 +254,9 @@ def patched_langchain(recorder: Recorder) -> Iterator[Recorder]:
             (BaseTool, name, tool_request) for name in _TOOL_METHODS if hasattr(BaseTool, name)
         ]
 
-    targets += _embedding_targets()
-
-    with patched_all(
-        targets, recorder, build_request=langchain_request, codec=MESSAGE_CODEC
-    ) as rec:
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(_patched_embeddings(recorder, stack))
+        rec = stack.enter_context(
+            patched_all(targets, recorder, build_request=langchain_request, codec=MESSAGE_CODEC)
+        )
         yield rec

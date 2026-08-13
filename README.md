@@ -250,6 +250,11 @@ friends, where `ChatAnthropic` inherits `invoke`. So the subclass tree is walked
 implementation patched, and only methods a class defines itself — an inherited one is covered once,
 at the parent.
 
+Walking the tree is not enough on its own, either. Providers are imported lazily on purpose —
+`from langchain_openai import OpenAIEmbeddings` inside the function that embeds, so importing the
+module needs no key — which means the class does not exist when the patch goes in. Subclass
+*creation* is hooked for the duration too, so a class imported later is patched as it appears.
+
 `embed_query` calls `embed_documents` underneath, and both are things an application calls directly,
 so both are intercepted and nesting is guarded: the outermost intercepted call records, the inner
 one passes through. That is general, not a per-library rule — it covers any layered API without
