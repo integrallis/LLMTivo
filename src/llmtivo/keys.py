@@ -68,7 +68,9 @@ def _messages_of(request: dict[str, Any]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for m in raw:
         if isinstance(m, dict):
-            out.append({"role": str(m.get("role", "")), "content": _content_of(m.get("content", ""))})
+            out.append(
+                {"role": str(m.get("role", "")), "content": _content_of(m.get("content", ""))}
+            )
         else:  # a LangChain message object, or anything else with .content
             role = getattr(m, "type", None) or getattr(m, "role", "") or m.__class__.__name__
             out.append({"role": str(role), "content": _content_of(getattr(m, "content", m))})

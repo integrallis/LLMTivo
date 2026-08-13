@@ -7,6 +7,7 @@ and it returns the response plus a record of where that response came from.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -89,6 +90,9 @@ class Recorder:
         self.on_drift = on_drift
         self.stats = Stats()
         self._ordinal = 0
+        self._lock = threading.Lock()
+        #: Ordinals already served this run — a recording answers exactly one call.
+        self._served: set[int] = set()
         if self.mode is Mode.RECORD:
             # a re-record starts from nothing: half-overwritten tape is worse than no tape
             self.cassette.truncate()
@@ -97,32 +101,39 @@ class Recorder:
         """Where this call's answer comes from — the shared decision for both sync and async.
 
         Kept in ONE place on purpose: two copies of this branching would drift, and the async copy
-        is the one nobody exercises until it matters."""
-        self._ordinal += 1
-        ordinal = self._ordinal
+        is the one nobody exercises until it matters.
+
+        Held under a lock because real pipelines fan out — a thread pool over stories, an
+        `asyncio.gather` over candidates. `self._ordinal += 1` is read-modify-write, so two workers
+        could otherwise take the same ordinal and one recording would overwrite the other."""
+        with self._lock:
+            self._ordinal += 1
+            ordinal = self._ordinal
         fp = fingerprint(request)
 
         if self.mode.may_replay:
-            recorded = self.cassette.get(ordinal)
-            if recorded is not None and recorded.fingerprint != fp:
+            with self._lock:
+                recorded = self._claim(ordinal, fp)
+            if recorded is not None:
+                self.stats.replayed += 1
+                return _Decision(ordinal, fp, recorded.response)
+
+            # Nothing on the tape answers this question, at this position or anywhere else.
+            stale = self.cassette.get(ordinal)
+            if stale is not None:
                 # STALE. The tape answers a question this code no longer asks, so it is not evidence
                 # of anything — order ADDRESSES an interaction, the fingerprint VALIDATES it.
                 self.stats.drifted += 1
                 detail = (
                     f"{self.cassette.test_id} call #{ordinal}: recorded for request "
-                    f"{recorded.fingerprint}, now asked {fp} — the prompt changed, so the recorded "
+                    f"{stale.fingerprint}, now asked {fp} — the prompt changed, so the recorded "
                     f"response is no longer an answer to it. Re-record this test."
                 )
                 if self.mode.strict:
                     raise FingerprintDrift(detail)
                 if self.on_drift:
-                    self.on_drift(self.cassette.test_id, recorded.fingerprint, fp)
+                    self.on_drift(self.cassette.test_id, stale.fingerprint, fp)
                 self.cassette.truncate_from(ordinal)  # the tail replies to an abandoned branch
-                recorded = None
-
-            if recorded is not None:
-                self.stats.replayed += 1
-                return _Decision(ordinal, fp, recorded.response)
 
             if self.mode.strict:
                 raise CassetteMiss(
@@ -137,7 +148,35 @@ class Recorder:
             )
         return _Decision(ordinal, fp, _MISS)
 
+    def _claim(self, ordinal: int, fp: str) -> Interaction | None:
+        """The recording that answers this question, consumed so nothing serves it twice.
+
+        The one at `ordinal` wins when its fingerprint matches — order is still the primary
+        address, which is what keeps two identical prompts (best-of-N) mapped to their two
+        DIFFERENT responses. Otherwise any UNCONSUMED interaction with the same fingerprint is
+        taken, which is how a concurrent run recovers: a call that was ordinal 3 while recording
+        can be ordinal 5 while replaying purely because a thread was scheduled differently, and
+        serving position 5's answer to it would be wrong in a way nothing downstream could detect.
+
+        Caller holds the lock.
+        """
+        at = self.cassette.get(ordinal)
+        if at is not None and at.fingerprint == fp and ordinal not in self._served:
+            self._served.add(ordinal)
+            return at
+        for other in self.cassette.load():
+            if other.fingerprint == fp and other.ordinal not in self._served:
+                self._served.add(other.ordinal)
+                return other
+        return None
+
     def _record(
+        self, ordinal: int, fp: str, request: dict[str, Any], response: Any, latency_ms: float
+    ) -> None:
+        with self._lock:
+            self._append(ordinal, fp, request, response, latency_ms)
+
+    def _append(
         self, ordinal: int, fp: str, request: dict[str, Any], response: Any, latency_ms: float
     ) -> None:
         self.cassette.append(
@@ -292,7 +331,9 @@ class Recorder:
         Every ordinal past the last one served is an answer the code stopped asking for."""
         if not self.mode.may_replay:
             return 0
-        return max(0, len(self.cassette) - self._ordinal)
+        # counted by what was CONSUMED, not by how far the ordinal counter got: an out-of-order
+        # run can serve interaction 8 on its first call, and it has still been played
+        return max(0, len(self.cassette) - len(self._served))
 
     @property
     def all_played(self) -> bool:

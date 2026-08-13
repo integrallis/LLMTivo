@@ -64,6 +64,20 @@ re-answered every later recording is a reply to a branch that no longer happens.
 
 Order brings resilience. The fingerprint brings accuracy. Neither is enough by itself.
 
+### Concurrency
+
+Real pipelines fan out — a thread pool over work items, an `asyncio.gather` over candidates — and
+arrival order is then scheduling order. A call that was ordinal 3 while recording can be ordinal 5
+while replaying, and serving position 5's answer to it would be wrong in a way nothing downstream
+could detect, because every call still *has* a recording.
+
+So order **addresses** an interaction and the fingerprint also **recovers** one that arrived out of
+order: if the recording at this position answers a different question, any unconsumed recording with
+this exact fingerprint is served instead. Each recording is consumed once, so two identical prompts
+(best-of-N) still map to their two different responses. A prompt that appears nowhere on the tape is
+a changed question and still drifts. Recording is serialised, so a fan-out cannot lose an
+interaction to a torn counter.
+
 ## Storage: filesystem by default
 
 A cassette is an artifact of the repo — reviewable in a diff, carried by the same git history as the

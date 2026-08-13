@@ -342,11 +342,15 @@ def test_structured_content_fingerprints_the_same_after_a_json_round_trip():
 
     from llmtivo.keys import fingerprint
 
-    live = [{"id": "t1", "caller": {"type": "direct"}, "input": {"city": "Lisbon"}, "type": "tool_use"}]
+    live = [
+        {"id": "t1", "caller": {"type": "direct"}, "input": {"city": "Lisbon"}, "type": "tool_use"}
+    ]
     round_tripped = json.loads(json.dumps({"k": live}, sort_keys=True))["k"]
     assert list(live[0]) != list(round_tripped[0]), "the keys must actually be reordered"
 
-    ask = lambda content: fingerprint({"model": "m", "messages": [{"role": "ai", "content": content}]})
+    ask = lambda content: fingerprint(
+        {"model": "m", "messages": [{"role": "ai", "content": content}]}
+    )
     assert ask(live) == ask(round_tripped), "key order changed the digest"
 
 
@@ -355,5 +359,7 @@ def test_structured_content_still_distinguishes_different_content():
     question, and reordering keys is the only thing that should be ignored."""
     from llmtivo.keys import fingerprint
 
-    ask = lambda content: fingerprint({"model": "m", "messages": [{"role": "ai", "content": content}]})
+    ask = lambda content: fingerprint(
+        {"model": "m", "messages": [{"role": "ai", "content": content}]}
+    )
     assert ask([{"input": {"city": "Lisbon"}}]) != ask([{"input": {"city": "Porto"}}])
