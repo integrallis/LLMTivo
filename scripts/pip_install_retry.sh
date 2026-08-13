@@ -1,32 +1,40 @@
 #!/usr/bin/env bash
-# Install a package that may have JUST been published, retrying while the index catches up.
+# Install a package that may have JUST been published to Test PyPI.
 #
-# Test PyPI does not make a new version resolvable the instant it is uploaded, and the delay is
-# uneven: one runner installs it immediately while another 404s for a minute. Every place that
-# installs a freshly published version needs the same patience, so it lives here once — three
-# separate inline copies is how one of them ended up with no retry at all and failed a release.
+# Uploading is not publishing. The upload returns 200 OK and the file is accepted, but the index
+# that resolvers read is eventually consistent and can lag by minutes — unevenly, so one runner
+# installs immediately while another 404s. Retrying the INSTALL conflates two questions ("is it
+# indexed yet?" and "does it install?") and reports an unresolvable-dependency error for what is
+# really a wait.
 #
-#   scripts/pip_install_retry.sh "llmtivo[all]==0.1.2" [extra uv pip install args...]
+# So: wait for the version to appear in the simple index, with a real deadline, and only then
+# install. A timeout here means the index genuinely never caught up, which is worth failing on.
+#
+#   scripts/pip_install_retry.sh "llmtivo[all]==0.1.3" [extra uv pip install args...]
 set -euo pipefail
 
 SPEC="$1"; shift
-ATTEMPTS="${RETRY_ATTEMPTS:-5}"
+DEADLINE_S="${INDEX_DEADLINE_S:-600}"
+INDEX="${TEST_PYPI_SIMPLE:-https://test.pypi.org/simple/llmtivo/}"
 
-for attempt in $(seq 1 "$ATTEMPTS"); do
-  echo "Attempt $attempt of $ATTEMPTS: $SPEC"
-  if uv pip install --system \
-      --index-strategy unsafe-best-match \
-      --extra-index-url https://test.pypi.org/simple/ \
-      "$@" "$SPEC"; then
-    echo "✅ installed $SPEC"
-    exit 0
+# "llmtivo[all]==0.1.3" -> 0.1.3
+VERSION="${SPEC##*==}"
+
+echo "waiting for llmtivo $VERSION in $INDEX (deadline ${DEADLINE_S}s)"
+waited=0
+until curl -fsSL "$INDEX" 2>/dev/null | grep -q "llmtivo-${VERSION}"; do
+  if [ "$waited" -ge "$DEADLINE_S" ]; then
+    echo "❌ llmtivo $VERSION never appeared in the index after ${DEADLINE_S}s"
+    echo "   (the upload may have succeeded — check the publish step — but resolvers cannot see it)"
+    exit 1
   fi
-  if [ "$attempt" -lt "$ATTEMPTS" ]; then
-    delay=$((attempt * 15))
-    echo "⏳ not resolvable yet, waiting ${delay}s..."
-    sleep "$delay"
-  fi
+  sleep 10
+  waited=$((waited + 10))
+  if [ $((waited % 60)) -eq 0 ]; then echo "  still waiting... ${waited}s"; fi
 done
+echo "✅ indexed after ${waited}s"
 
-echo "❌ $SPEC never became installable from Test PyPI after $ATTEMPTS attempts"
-exit 1
+uv pip install --system \
+  --index-strategy unsafe-best-match \
+  --extra-index-url https://test.pypi.org/simple/ \
+  "$@" "$SPEC"
