@@ -91,18 +91,27 @@ jobs:
       - name: Install from Test PyPI
         env:
           VERSION: ${{ needs.test-release.outputs.version }}
+        # Test PyPI propagates unevenly: a freshly published version can 404 on one runner while
+        # resolving fine on another. A single 5s retry lost that race on macOS/3.11 and skipped the
+        # real publish. Same backoff as the validate job.
         run: |
-          uv pip install --system \
-            --index-strategy unsafe-best-match \
-            --extra-index-url https://test.pypi.org/simple/ \
-            "llmtivo==$VERSION" || \
-          ( \
-            sleep 5 && \
-            uv pip install --system \
+          for attempt in 1 2 3 4; do
+            echo "Attempt $attempt of 4..."
+            if uv pip install --system \
               --index-strategy unsafe-best-match \
               --extra-index-url https://test.pypi.org/simple/ \
-              "llmtivo==$VERSION" \
-          )
+              "llmtivo==$VERSION"; then
+              echo "✅ Installed llmtivo==$VERSION"
+              exit 0
+            fi
+            if [ $attempt -lt 4 ]; then
+              delay=$((attempt * 15))
+              echo "⏳ not visible yet, waiting ${delay}s..."
+              sleep $delay
+            fi
+          done
+          echo "❌ llmtivo==$VERSION never became installable from Test PyPI"
+          exit 1
 
       - name: Install test dependencies
         run: uv sync --group dev --group integration
@@ -164,11 +173,27 @@ jobs:
       - name: Install from Test PyPI
         env:
           VERSION: ${{ needs.test-release.outputs.version }}
+        # Test PyPI propagates unevenly: a freshly published version can 404 on one runner while
+        # resolving fine on another. A single 5s retry lost that race on macOS/3.11 and skipped the
+        # real publish. Same backoff as the validate job.
         run: |
-          uv pip install --system \
-            --index-strategy unsafe-best-match \
-            --extra-index-url https://test.pypi.org/simple/ \
-            "llmtivo==$VERSION"
+          for attempt in 1 2 3 4; do
+            echo "Attempt $attempt of 4..."
+            if uv pip install --system \
+              --index-strategy unsafe-best-match \
+              --extra-index-url https://test.pypi.org/simple/ \
+              "llmtivo==$VERSION"; then
+              echo "✅ Installed llmtivo==$VERSION"
+              exit 0
+            fi
+            if [ $attempt -lt 4 ]; then
+              delay=$((attempt * 15))
+              echo "⏳ not visible yet, waiting ${delay}s..."
+              sleep $delay
+            fi
+          done
+          echo "❌ llmtivo==$VERSION never became installable from Test PyPI"
+          exit 1
 
       - name: Install tomli for pyproject parsing
         run: uv pip install --system tomli
