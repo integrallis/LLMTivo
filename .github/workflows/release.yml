@@ -1,0 +1,337 @@
+name: Release to PyPI
+
+on:
+  release:
+    types: [published]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # Verify version matches release tag (fail fast)
+  verify-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tomli for version parsing
+        run: pip install tomli
+
+      - name: Get package version
+        id: get-version
+        run: |
+          VERSION=$(python -c "
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              import tomli as tomllib
+          print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])
+          ")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Package version: $VERSION"
+
+      - name: Verify version matches release tag
+        if: github.event_name == 'release'
+        env:
+          VERSION: ${{ steps.get-version.outputs.version }}
+        run: |
+          RELEASE_TAG=${GITHUB_REF#refs/tags/}
+          RELEASE_VERSION=${RELEASE_TAG#v}
+
+          echo "Package version: $VERSION"
+          echo "Release tag: $RELEASE_TAG"
+          echo "Release version: $RELEASE_VERSION"
+
+          if [ "$VERSION" != "$RELEASE_VERSION" ]; then
+            echo "❌ Error: Package version ($VERSION) does not match release version ($RELEASE_VERSION)"
+            echo "Please update the version in pyproject.toml to match the release tag"
+            exit 1
+          fi
+
+          echo "✅ Version verification passed"
+
+  # Test the release on Test PyPI
+  test-release:
+    needs: verify-version
+    uses: ./.github/workflows/test-release.yml
+    permissions: write-all
+    secrets: inherit
+
+  # Run comprehensive pre-release validation
+  pre-release-checks:
+    needs:
+      - verify-version
+      - test-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.12', '3.13']
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No caching - we want to catch any dependency issues
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v3
+
+      - name: Upgrade setuptools with UV
+        run: |
+          uv pip install --system "setuptools>=40.8.0" wheel
+
+      - name: Install from Test PyPI
+        env:
+          VERSION: ${{ needs.test-release.outputs.version }}
+        run: |
+          uv pip install --system \
+            --index-strategy unsafe-best-match \
+            --extra-index-url https://test.pypi.org/simple/ \
+            "llmtivo==$VERSION" || \
+          ( \
+            sleep 5 && \
+            uv pip install --system \
+              --index-strategy unsafe-best-match \
+              --extra-index-url https://test.pypi.org/simple/ \
+              "llmtivo==$VERSION" \
+          )
+
+      - name: Install test dependencies
+        run: uv sync --group dev
+
+      - name: Reinstall package from Test PyPI
+        env:
+          VERSION: ${{ needs.test-release.outputs.version }}
+        run: |
+          uv pip install --system \
+            --extra-index-url https://test.pypi.org/simple/ \
+            --force-reinstall --no-deps \
+            "llmtivo==$VERSION"
+
+      - name: Run full test suite
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          uv run pytest tests/ -v --tb=short
+          echo "✅ All tests passed on Python ${{ matrix.python-version }}"
+
+      - name: Run type checking
+        run: |
+          uv run mypy --strict src/llmtivo/
+          echo "✅ Type checking passed"
+
+      - name: Run linting
+        run: |
+          uv run ruff check src/
+          echo "✅ Linting passed"
+
+      # `--min-score` exits non-zero. The previous version printed a warning and released anyway,
+      # which is a gate that cannot fail — worse than none, because the log says it was checked.
+      - name: MFCQI quality gate
+        run: uv run mfcqi-py analyze src/llmtivo --skip-llm --min-score 0.75
+
+  # Get minimum dependency versions and test with them
+  test-min-versions:
+    needs:
+      - verify-version
+      - test-release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install UV
+        uses: astral-sh/setup-uv@v3
+
+      - name: Upgrade setuptools with UV
+        run: |
+          uv pip install --system "setuptools>=40.8.0" wheel
+
+      - name: Install from Test PyPI
+        env:
+          VERSION: ${{ needs.test-release.outputs.version }}
+        run: |
+          uv pip install --system \
+            --index-strategy unsafe-best-match \
+            --extra-index-url https://test.pypi.org/simple/ \
+            "llmtivo==$VERSION"
+
+      - name: Install tomli for pyproject parsing
+        run: uv pip install --system tomli
+
+      - name: Get minimum versions from pyproject.toml
+        id: min-versions
+        run: |
+          # Extract minimum versions from dependencies
+          python -c "
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              import tomli as tomllib
+          import re
+
+          with open('pyproject.toml', 'rb') as f:
+              data = tomllib.load(f)
+
+          deps = data['project']['dependencies']
+          min_versions = []
+
+          for dep in deps:
+              # Parse 'package>=1.2.3' -> 'package==1.2.3'
+              match = re.match(r'([a-zA-Z0-9_-]+)>=([0-9.]+)', dep)
+              if match:
+                  pkg, ver = match.groups()
+                  # Skip some packages that have complex version constraints
+                  if pkg not in ['networkx', 'scipy']:
+                      min_versions.append(f'{pkg}=={ver}')
+
+          print(' '.join(min_versions))
+          " > /tmp/min_versions.txt
+
+          MIN_VERSIONS=$(cat /tmp/min_versions.txt)
+          echo "min-versions=$MIN_VERSIONS" >> $GITHUB_OUTPUT
+          echo "Minimum versions: $MIN_VERSIONS"
+
+      - name: Install test dependencies
+        run: uv sync --group dev
+
+      - name: Install minimum dependency versions
+        if: steps.min-versions.outputs.min-versions != ''
+        env:
+          MIN_VERSIONS: ${{ steps.min-versions.outputs.min-versions }}
+        run: |
+          if [ -n "$MIN_VERSIONS" ]; then
+            uv pip install --system $MIN_VERSIONS
+            echo "✅ Installed minimum versions"
+          fi
+
+      - name: Run tests with minimum versions
+        if: steps.min-versions.outputs.min-versions != ''
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+        run: |
+          uv run pytest tests/ -v --tb=short
+          echo "✅ Tests passed with minimum dependency versions"
+
+  # Only publish to production PyPI after all validations pass
+  publish-pypi:
+    needs:
+      - verify-version
+      - test-release
+      - pre-release-checks
+      - test-min-versions
+    runs-on: ubuntu-latest
+    environment: release
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-dist
+          path: dist/
+
+      - name: Publish to production PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
+          verbose: true
+          print-hash: true
+          attestations: false
+
+  # Create or update GitHub release
+  mark-release:
+    needs:
+      - verify-version
+      - test-release
+      - pre-release-checks
+      - test-min-versions
+      - publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: test-dist
+          path: dist/
+
+      - name: Update release with PyPI links
+        uses: actions/github-script@v7
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        with:
+          script: |
+            const version = process.env.VERSION;
+            const packageName = 'llmtivo';
+
+            // Get the release (either from the release event or find by tag)
+            let release;
+            if (context.eventName === 'release') {
+              release = context.payload.release;
+            } else {
+              // For workflow_dispatch, find the latest release
+              const { data: releases } = await github.rest.repos.listReleases({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 1
+              });
+              release = releases[0];
+            }
+
+            if (!release) {
+              console.log('No release found, skipping update');
+              return;
+            }
+
+            const pypiLinks = `
+
+            ## 📦 PyPI Release
+
+            This release is now available on PyPI:
+
+            - **PyPI Package**: https://pypi.org/project/${packageName}/${version}/
+            - **Installation**: \`pip install ${packageName}==${version}\`
+            - **Upgrade**: \`pip install --upgrade ${packageName}\`
+
+            ### Quick Start
+
+            \`\`\`bash
+            pip install ${packageName}[pytest]
+            pytest                      # replay — CI-safe, costs nothing
+            pytest --llmtivo=record-new # record only the tests with no tape yet
+            \`\`\`
+
+            ### What's New in v${version}
+
+            See the full changelog above for details.
+            `;
+
+            await github.rest.repos.updateRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.id,
+              body: (release.body || '') + pypiLinks
+            });
+
+            console.log('✅ Updated release with PyPI links');

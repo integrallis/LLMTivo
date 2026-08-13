@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # the project declares requires-python = ">=3.11"; 3.10 was inherited from another
+        # project's config and could never have resolved
+        python-version: ['3.11', '3.12', '3.13']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install UV
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+
+    - name: Install dependencies
+      run: |
+        uv sync --group dev
+        uv run python -c "import llmtivo; print('LLMTivo installed successfully')"
+
+    - name: Check formatting and types
+      shell: bash
+      run: |
+        uv run ruff format --check src/ tests/
+        uv run ruff check src/ tests/
+        uv run mypy --strict src/llmtivo/
+
+    # `pytest --cov` UNDER-REPORTS this project specifically: llmtivo registers a pytest11 plugin,
+    # so the package is imported while pytest loads plugins — before pytest-cov starts tracing.
+    # Every line executed at import time is then invisible (it measured 59% against a real 93%).
+    # Running coverage as the OUTER process starts tracing first and measures the truth.
+    - name: Run the suite under coverage
+      shell: bash
+      run: |
+        uv run coverage run --source=src/llmtivo -m pytest tests/ -v
+        uv run coverage xml
+        uv run coverage report --fail-under=85
+
+    - name: Upload coverage reports to Codecov
+      if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+      uses: codecov/codecov-action@v5
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        files: ./coverage.xml
+        flags: unittests
+        name: codecov-${{ matrix.os }}-py${{ matrix.python-version }}
+        fail_ci_if_error: false
+
+    # A quality gate that only prints a warning is not a gate. `--min-score` exits non-zero, so
+    # this fails the build rather than narrating the number and passing anyway.
+    - name: MFCQI quality gate
+      if: matrix.os == 'ubuntu-latest'
+      run: uv run mfcqi-py analyze src/llmtivo --skip-llm --min-score 0.75
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: test-results-${{ matrix.os }}-py${{ matrix.python-version }}
+        path: |
+          coverage.xml
+          htmlcov/
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: astral-sh/setup-uv@v3
+    - name: Install dependencies
+      run: uv sync --group dev
+    - name: Bandit
+      run: uv run bandit -r src/ -q
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install build dependencies
+      run: pip install build twine
+
+    - name: Build package
+      run: python -m build
+
+    - name: Check package
+      run: python -m twine check dist/*
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: python-package
+        path: dist/

@@ -1,0 +1,112 @@
+[project]
+name = "llmtivo"
+version = "0.1.0"
+description = "LLMTivo - record real LLM calls once, replay them forever, on the filesystem"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Brian Sam-Bodden", email = "bsbodden@gmail.com" },
+]
+maintainers = [
+    { name = "Brian Sam-Bodden", email = "bsbodden@gmail.com" },
+]
+requires-python = ">=3.11"
+keywords = [
+    "llm",
+    "testing",
+    "vcr",
+    "cassette",
+    "record-replay",
+    "pytest",
+    "fixtures",
+    "determinism",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed"
+]
+dependencies = [
+    "zstandard>=0.22.0",
+]
+
+[project.optional-dependencies]
+# pytest is NOT a runtime dependency — the core recorder is usable without it. This extra exists so
+# `pip install llmtivo[pytest]` pulls a version new enough for the plugin's fixtures.
+pytest = ["pytest>=8.0"]
+# ONE optional integration instead of an adapter per provider: LiteLLM already normalises 100+
+# providers, so patching its entry points covers them all and a provider it adds arrives for free.
+litellm = ["litellm>=1.77"]
+# The OTHER seam that matters. A LangChain app on `ChatAnthropic` never enters LiteLLM, so the
+# LiteLLM extra would record nothing for it. One patch on `BaseChatModel` covers LangChain,
+# LangGraph and DeepAgents at once — they all bottom out there.
+langchain = ["langchain-core>=0.3"]
+all = ["pytest>=8.0", "litellm>=1.77", "langchain-core>=0.3"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llmtivo"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project.urls]
+"Homepage" = "https://github.com/integrallis/llmtivo"
+"Bug Reports" = "https://github.com/integrallis/llmtivo/issues"
+"Source" = "https://github.com/integrallis/llmtivo"
+"Documentation" = "https://github.com/integrallis/llmtivo#readme"
+
+[dependency-groups]
+dev = [
+    "bandit>=1.8.6",
+    # the seams' own dependencies: without these the adapter tests SKIP, and a skipped seam test
+    # looks exactly like a passing one in the summary line
+    "langchain-core>=0.3",
+    # PyPI package `mfcqi`; its CLI installs as `mfcqi-py` (the Kotlin binary owns the `mfcqi` name)
+    "mfcqi>=0.0.6",
+    "hypothesis>=6.139.2",
+    "mypy>=1.18.2",
+    "pytest>=8.4.2",
+    "pytest-cov>=7.0.0",
+    "pytest-timeout>=2.3.1",
+    "pytest-watch>=4.2.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.13.1",
+    "types-pyyaml>=6.0.12.20250915",
+    "types-requests>=2.32.4.20250913",
+    "types-toml>=0.10.8.20240310",
+    "vulture>=2.10",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:httpx.*",
+    "ignore::UserWarning:pydantic.*",
+    "ignore::DeprecationWarning:litellm.*",
+    "ignore:.*Use 'content=.*:DeprecationWarning",
+    "ignore:.*There is no current event loop.*:DeprecationWarning",
+    # Suppress AST deprecation warnings from Bandit (Python 3.13+)
+    "ignore:ast.Str is deprecated.*:DeprecationWarning",
+    "ignore:ast.Num is deprecated.*:DeprecationWarning",
+    "ignore:ast.Ellipsis is deprecated.*:DeprecationWarning",
+    "ignore:ast.NameConstant is deprecated.*:DeprecationWarning",
+    "ignore:ast.Bytes is deprecated.*:DeprecationWarning",
+    "ignore:Attribute s is deprecated.*:DeprecationWarning",
+    "ignore:Attribute n is deprecated.*:DeprecationWarning",
+    # Suppress sre_constants deprecation (Python 3.13+)
+    "ignore:module 'sre_constants' is deprecated:DeprecationWarning",
+]

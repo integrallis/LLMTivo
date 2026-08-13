@@ -1,0 +1,26 @@
+# Bandit configuration for LLMTivo project
+[bandit]
+exclude_dirs = [
+    "tests",
+    ".venv",
+    "build",
+    "dist"
+]
+
+# Skip certain tests that are not relevant for our use case or are false positives
+skips = [
+    "B101",  # Test for use of assert
+    "B110",  # Test for a try/except pass - used for optional dependency handling
+    "B404",  # Test for subprocess import - we use subprocess securely with absolute paths
+    "B601",  # paramiko calls (not used)
+    "B602",  # subprocess popen with shell=true (controlled usage)
+    "B603",  # subprocess without shell equals true (controlled usage)
+]
+
+# Severity level
+# LOW, MEDIUM, HIGH
+severity = MEDIUM
+
+# Confidence level
+# LOW, MEDIUM, HIGH
+confidence = MEDIUM

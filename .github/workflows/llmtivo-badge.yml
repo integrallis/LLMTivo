@@ -1,0 +1,115 @@
+name: Update LLMTivo Badge
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-badge:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required for git push to update badge file
+      issues: write    # Required for PR comments
+      pull-requests: write
+
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.13'
+
+    - name: Install UV
+      uses: astral-sh/setup-uv@v3
+      with:
+        enable-cache: true
+
+    - name: Install dependencies
+      run: |
+        uv sync --frozen
+
+    - name: Calculate LLMTivo Score
+      id: llmtivo
+      env:
+        LLMTivo_DISABLE_KEYRING: "1"
+      run: |
+        # Save old score if badge exists
+        mkdir -p .github/badges
+        if [ -f .github/badges/llmtivo.json ]; then
+          OLD_SCORE=$(python -c "import json; data=json.load(open('.github/badges/llmtivo.json')); print(data['message'].split()[0])" 2>/dev/null || echo "0.0")
+        else
+          OLD_SCORE="0.0"
+        fi
+        echo "old_score=$OLD_SCORE" >> $GITHUB_OUTPUT
+
+        # Calculate new score and save to JSON
+        uv run mfcqi-py badge src/llmtivo -f json -o .github/badges/llmtivo.json
+
+        # Extract new score
+        NEW_SCORE=$(python -c "import json; data=json.load(open('.github/badges/llmtivo.json')); print(data['message'].split()[0])")
+        echo "score=$NEW_SCORE" >> $GITHUB_OUTPUT
+
+        # Calculate delta and determine arrow
+        DELTA=$(python -c "print(f'{float('$NEW_SCORE') - float('$OLD_SCORE'):.3f}')")
+        echo "delta=$DELTA" >> $GITHUB_OUTPUT
+
+        # Determine arrow and format delta
+        if (( $(echo "$DELTA > 0" | bc -l) )); then
+          echo "arrow=↑" >> $GITHUB_OUTPUT
+          echo "delta_formatted=(+$DELTA)" >> $GITHUB_OUTPUT
+        elif (( $(echo "$DELTA < 0" | bc -l) )); then
+          echo "arrow=↓" >> $GITHUB_OUTPUT
+          echo "delta_formatted=($DELTA)" >> $GITHUB_OUTPUT
+        else
+          echo "arrow=→" >> $GITHUB_OUTPUT
+          echo "delta_formatted=(±0.000)" >> $GITHUB_OUTPUT
+        fi
+
+        # Determine if this is good enough
+        if (( $(echo "$NEW_SCORE >= 0.75" | bc -l) )); then
+          echo "status=passing" >> $GITHUB_OUTPUT
+        else
+          echo "status=failing" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Commit badge update
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add .
+        git diff --quiet && git diff --staged --quiet || (git commit -m "chore: Update LLMTivo badge: ${{ steps.llmtivo.outputs.score }} ${{ steps.llmtivo.outputs.arrow }} ${{ steps.llmtivo.outputs.delta_formatted }}" && git push)
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const score = '${{ steps.llmtivo.outputs.score }}';
+          const oldScore = '${{ steps.llmtivo.outputs.old_score }}';
+          const arrow = '${{ steps.llmtivo.outputs.arrow }}';
+          const deltaFormatted = '${{ steps.llmtivo.outputs.delta_formatted }}';
+          const status = '${{ steps.llmtivo.outputs.status }}';
+          const emoji = status === 'passing' ? '✅' : '⚠️';
+          const trendEmoji = arrow === '↑' ? '📈' : arrow === '↓' ? '📉' : '➡️';
+
+          try {
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ${emoji} LLMTivo Score: ${score} ${arrow} ${deltaFormatted}\n\n${trendEmoji} **Previous:** ${oldScore}\n\nCode quality ${status === 'passing' ? 'meets' : 'does not meet'} the minimum threshold (0.75).`
+            });
+          } catch (error) {
+            core.warning(`Unable to post LLMTivo PR comment: ${error.message}`);
+          }
