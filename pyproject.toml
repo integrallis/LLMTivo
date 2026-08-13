@@ -55,6 +55,11 @@ litellm = ["litellm>=1.77"]
 langchain = ["langchain-core>=0.3"]
 all = ["pytest>=8.0", "litellm>=1.77", "langchain-core>=0.3"]
 
+[project.entry-points.pytest11]
+# Auto-discovery: installing llmtivo makes the `llmtivo` fixture available with no conftest line.
+# pytest itself loads this, so it is never imported in a project that does not have pytest.
+llmtivo = "llmtivo.plugin"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/llmtivo"]
 
