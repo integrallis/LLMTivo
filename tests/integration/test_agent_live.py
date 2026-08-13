@@ -53,7 +53,9 @@ def test_an_agent_loop_with_a_real_search_tool(llmtivo, recording) -> None:
 
     tape = llmtivo.recorder.cassette.load()
     kinds = [i.request.get("tool") or f"model:{i.model}" for i in tape]
-    assert any(k == "tavily_search" for k in kinds), f"the tool execution is not on the tape: {kinds}"
+    assert any(k == "tavily_search" for k in kinds), (
+        f"the tool execution is not on the tape: {kinds}"
+    )
     assert len(tape) >= 3, f"expected model -> tool -> model, got {kinds}"
 
 

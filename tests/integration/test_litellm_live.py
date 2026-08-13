@@ -39,7 +39,7 @@ def test_a_real_completion_records_and_replays(llmtivo, recording, model: str, k
             model=model,
             messages=[{"role": "user", "content": "Reply with exactly: PONG"}],
             max_tokens=256,  # gemini-2.5 is a THINKING model: a small budget is
-            temperature=0,   # spent on reasoning and leaves nothing for the answer
+            temperature=0,  # spent on reasoning and leaves nothing for the answer
         )
 
     content = response["choices"][0]["message"]["content"]

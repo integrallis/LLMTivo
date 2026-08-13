@@ -105,4 +105,6 @@ def test_four_providers_share_one_tape_in_call_order(llmtivo, recording) -> None
 
     tape = llmtivo.recorder.cassette.load()
     assert [i.ordinal for i in tape] == [1, 2, 3, 4]
-    assert len({i.model for i in tape}) == 4, f"expected four distinct models: {[i.model for i in tape]}"
+    assert len({i.model for i in tape}) == 4, (
+        f"expected four distinct models: {[i.model for i in tape]}"
+    )

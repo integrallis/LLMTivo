@@ -93,7 +93,9 @@ def test_a_real_model_drives_an_mcp_tool(llmtivo, recording) -> None:
 
     tools = {t.name: t for t in asyncio.run(load_tools())}
     add = tools["add"]
-    question = HumanMessage("What is 17 plus 25? Use the add tool, then reply with just the number.")
+    question = HumanMessage(
+        "What is 17 plus 25? Use the add tool, then reply with just the number."
+    )
 
     with patched_langchain(llmtivo.recorder):
         model = openai_model().bind_tools([add])

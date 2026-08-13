@@ -52,8 +52,10 @@ def test_a_real_model_asks_for_a_tool_and_the_request_survives(
         requires(key)
 
     with patched_langchain(llmtivo.recorder):
-        response = build().bind_tools([get_weather]).invoke(
-            [HumanMessage("What is the weather in Lisbon? Use the tool.")]
+        response = (
+            build()
+            .bind_tools([get_weather])
+            .invoke([HumanMessage("What is the weather in Lisbon? Use the tool.")])
         )
 
     assert isinstance(response, AIMessage)
@@ -87,7 +89,9 @@ def test_the_full_round_trip_model_tool_model(llmtivo, recording, name, build, k
 
     tape = llmtivo.recorder.cassette.load()
     assert [i.ordinal for i in tape] == [1, 2, 3]
-    assert tape[1].request.get("tool") == "get_weather", f"call 2 should be the tool: {tape[1].request}"
+    assert tape[1].request.get("tool") == "get_weather", (
+        f"call 2 should be the tool: {tape[1].request}"
+    )
 
     ran = RAN["get_weather"] - before
     if recording:

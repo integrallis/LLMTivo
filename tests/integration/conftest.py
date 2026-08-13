@@ -49,9 +49,13 @@ def pytest_configure(config: pytest.Config) -> None:
         load_dotenv(env_file)
 
     for name in _PROVIDER_KEYS:
-        os.environ.setdefault(name, _PLACEHOLDER)
+        # `setdefault` is NOT enough: CI sets these to the EMPTY STRING to prove replay needs no
+        # credential, and an empty value is present-but-useless — the client then raises "Missing
+        # credentials" instead of being handed a placeholder. Blank counts as absent.
+        if not os.environ.get(name, "").strip():
+            os.environ[name] = _PLACEHOLDER
     # langchain_google_genai reads GOOGLE_API_KEY; the .env supplies GEMINI_API_KEY
-    if os.environ.get("GOOGLE_API_KEY") == _PLACEHOLDER:
+    if os.environ.get("GOOGLE_API_KEY", "").strip() in ("", _PLACEHOLDER):
         os.environ["GOOGLE_API_KEY"] = os.environ["GEMINI_API_KEY"]
 
 
