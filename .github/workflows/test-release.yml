@@ -122,24 +122,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         # Regular PyPI stays the PRIMARY index so dependencies resolve normally; Test PyPI is an
         # extra index carrying only the version under test. Test PyPI can lag, hence the retries.
-        run: |
-          for attempt in 1 2 3 4 5; do
-            echo "Attempt $attempt of 5..."
-            if uv pip install --system \
-              --index-strategy unsafe-best-match \
-              --extra-index-url https://test.pypi.org/simple/ \
-              "llmtivo[all]==$VERSION"; then
-              echo "✅ Successfully installed llmtivo==$VERSION"
-              exit 0
-            fi
-            if [ $attempt -lt 5 ]; then
-              delay=$((attempt * 15))
-              echo "⏳ Install failed, waiting ${delay}s before retry..."
-              sleep $delay
-            fi
-          done
-          echo "❌ Failed to install after 5 attempts"
-          exit 1
+        run: scripts/pip_install_retry.sh "llmtivo[all]==$VERSION"
 
       - name: Verify package import and version
         env:
@@ -180,11 +163,7 @@ jobs:
       - name: Reinstall package from Test PyPI (overwrite editable install)
         env:
           VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          uv pip install --system \
-            --extra-index-url https://test.pypi.org/simple/ \
-            --force-reinstall --no-deps \
-            "llmtivo==$VERSION"
+        run: scripts/pip_install_retry.sh "llmtivo==$VERSION" --force-reinstall --no-deps
 
       - name: Run the suite against the published package
         env:
