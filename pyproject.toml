@@ -94,10 +94,28 @@ dev = [
     "types-toml>=0.10.8.20240310",
     "vulture>=2.10",
 ]
+integration = [
+    "langchain",
+    "langchain-anthropic",
+    "langchain-deepseek",
+    "langchain-google-genai",
+    "langchain-mcp-adapters",
+    "langchain-openai",
+    "langchain-tavily",
+    "langgraph",
+    "litellm",
+    "python-dotenv",
+]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+markers = [
+    # Integration tests call real providers when recording, and replay from committed tapes
+    # otherwise. They are NOT excluded by default: a replayed integration test is free and offline,
+    # and excluding it by default is how a suite stops noticing that a provider changed.
+    "integration: exercises a real provider (recorded; replays offline)",
+]
 filterwarnings = [
     "ignore::DeprecationWarning:httpx.*",
     "ignore::UserWarning:pydantic.*",

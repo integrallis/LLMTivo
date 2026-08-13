@@ -10,6 +10,9 @@ import pytest
 from llmtivo import MemoryStore, Mode, Recorder
 from llmtivo.litellm import litellm_request, patched_litellm
 
+#: The REAL response class, captured before any test swaps `sys.modules["litellm"]` for a fake.
+REAL_MODEL_RESPONSE = pytest.importorskip("litellm.types.utils").ModelResponse
+
 
 @pytest.fixture
 def fake_litellm(monkeypatch):
@@ -28,6 +31,8 @@ def fake_litellm(monkeypatch):
     mod.completion = completion
     mod.embedding = embedding
     mod.calls = calls
+    # the real module exposes its response classes; the codec resolves them by name from here
+    mod.ModelResponse = REAL_MODEL_RESPONSE
     monkeypatch.setitem(sys.modules, "litellm", mod)
     return mod
 
@@ -134,3 +139,31 @@ def test_the_original_functions_are_restored(fake_litellm):
         with patched_litellm(Recorder(MemoryStore(), "t::e", mode=Mode.RECORD)):
             raise ValueError("boom")
     assert litellm.completion is before
+
+
+def test_a_real_ModelResponse_replays_as_a_ModelResponse(fake_litellm):
+    """The fakes above return plain dicts, which is exactly why this went unnoticed.
+
+    LiteLLM really returns a `ModelResponse` object, and a cassette is JSON: without a codec
+    `json.dumps(default=str)` writes its repr, and replay hands back a STRING. The caller's next
+    line — `response["choices"][0]["message"]["content"]` — then raises `TypeError: string indices
+    must be integers`. Found by the integration suite against the real API; pinned here so a fake
+    can catch it too.
+    """
+    import litellm
+
+    real = REAL_MODEL_RESPONSE(
+        choices=[{"message": {"role": "assistant", "content": "PONG"}}], model="gpt-4o-mini"
+    )
+    fake_litellm.completion = lambda **kw: real
+
+    store = MemoryStore()
+    with patched_litellm(Recorder(store, "t::real", mode=Mode.RECORD)):
+        live = litellm.completion(model="m", messages=[{"role": "user", "content": "ping"}])
+
+    with patched_litellm(Recorder(store, "t::real", mode=Mode.REPLAY)):
+        replayed = litellm.completion(model="m", messages=[{"role": "user", "content": "ping"}])
+
+    assert not isinstance(replayed, str), f"replayed a string: {replayed!r:.80}"
+    assert replayed["choices"][0]["message"]["content"] == "PONG"
+    assert type(replayed) is type(live)

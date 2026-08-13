@@ -34,7 +34,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        uv sync --group dev
+        uv sync --group dev --group integration
         uv run python -c "import llmtivo; print('LLMTivo installed successfully')"
 
     - name: Check formatting and types
@@ -48,8 +48,14 @@ jobs:
     # so the package is imported while pytest loads plugins — before pytest-cov starts tracing.
     # Every line executed at import time is then invisible (it measured 59% against a real 93%).
     # Running coverage as the OUTER process starts tracing first and measures the truth.
+    # The integration tests run HERE, in replay, with no keys and no network: they are committed
+    # tapes of real OpenAI / Anthropic / Gemini / DeepSeek / Tavily / MCP traffic. Excluding them
+    # from CI is how a suite stops noticing that a provider changed a response shape.
     - name: Run the suite under coverage
       shell: bash
+      env:
+        ANTHROPIC_API_KEY: ""
+        OPENAI_API_KEY: ""
       run: |
         uv run coverage run --source=src/llmtivo -m pytest tests/ -v
         uv run coverage xml

@@ -43,6 +43,23 @@ def _normalize(text: str) -> str:
 WIDTH = 16
 
 
+def _content_of(value: Any) -> str:
+    """Canonical text for a message's content, whatever shape it arrives in.
+
+    Content is not always a string: Anthropic returns a LIST OF BLOCKS for tool use, and multimodal
+    messages carry lists everywhere. `str()` on those digests the Python REPR, whose dict key order
+    is insertion order — so the same content, having been through JSON on its way to a cassette,
+    orders its keys differently and hashes differently. Every replayed multi-turn agent run then
+    drifts at the turn that quotes a previous structured response: the model behaved identically and
+    the tape gets thrown away regardless. Sorted-key JSON is stable across that round trip.
+    """
+    if isinstance(value, str):
+        return _normalize(value)
+    if isinstance(value, (dict, list, tuple)):
+        return _normalize(json.dumps(_stable(value), separators=(",", ":"), sort_keys=True))
+    return _normalize(str(value))
+
+
 def _messages_of(request: dict[str, Any]) -> list[dict[str, str]]:
     """The role/content pairs, however the caller spelled them."""
     raw = request.get("messages") or request.get("input") or []
@@ -51,12 +68,10 @@ def _messages_of(request: dict[str, Any]) -> list[dict[str, str]]:
     out: list[dict[str, str]] = []
     for m in raw:
         if isinstance(m, dict):
-            out.append(
-                {"role": str(m.get("role", "")), "content": _normalize(str(m.get("content", "")))}
-            )
+            out.append({"role": str(m.get("role", "")), "content": _content_of(m.get("content", ""))})
         else:  # a LangChain message object, or anything else with .content
             role = getattr(m, "type", None) or getattr(m, "role", "") or m.__class__.__name__
-            out.append({"role": str(role), "content": _normalize(str(getattr(m, "content", m)))})
+            out.append({"role": str(role), "content": _content_of(getattr(m, "content", m))})
     return out
 
 

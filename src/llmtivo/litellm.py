@@ -24,7 +24,10 @@ from collections.abc import Iterator
 from typing import Any
 
 from llmtivo.intercept import patched
-from llmtivo.recorder import Recorder  # noqa: TC001 - used at runtime
+from llmtivo.recorder import Codec, Recorder
+
+#: Marks which LiteLLM response class a recorded payload came from, so replay rebuilds the same one.
+_TYPE_KEY = "__litellm_class__"
 
 
 def litellm_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -49,6 +52,37 @@ def litellm_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
         if key in kwargs:
             request[key] = kwargs[key]
     return request
+
+
+def _encode(response: Any) -> Any:
+    """A LiteLLM response as a plain dict, tagged with the class to rebuild it as."""
+    dump = getattr(response, "model_dump", None)
+    if dump is None:
+        return response
+    payload = dump()
+    payload[_TYPE_KEY] = type(response).__name__
+    return payload
+
+
+def _decode(payload: Any) -> Any:
+    """The inverse of [_encode][llmtivo.litellm._encode].
+
+    Without this a replayed response is whatever `json.dumps(default=str)` made of a `ModelResponse`
+    — a STRING — and the caller's very next line, `response["choices"][0]["message"]["content"]`,
+    raises `TypeError: string indices must be integers`. A replayed response has to be the same TYPE
+    the live call returned.
+    """
+    if not isinstance(payload, dict) or _TYPE_KEY not in payload:
+        return payload
+    import litellm
+
+    fields = {k: v for k, v in payload.items() if k != _TYPE_KEY}
+    cls = getattr(litellm, payload[_TYPE_KEY], None)
+    return cls(**fields) if cls is not None else fields
+
+
+#: Translates LiteLLM responses to and from the JSON on the tape.
+RESPONSE_CODEC = Codec(_encode, _decode)
 
 
 def _targets() -> list[tuple[Any, str]]:
@@ -100,5 +134,13 @@ def patched_litellm(recorder: Recorder) -> Iterator[Recorder]:
 
     with contextlib.ExitStack() as stack:
         for target, method in targets:
-            stack.enter_context(patched(target, method, recorder, build_request=litellm_request))
+            stack.enter_context(
+                patched(
+                    target,
+                    method,
+                    recorder,
+                    build_request=litellm_request,
+                    codec=RESPONSE_CODEC,
+                )
+            )
         yield recorder

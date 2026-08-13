@@ -274,6 +274,32 @@ because one is not enough:
 | `langchain` | the LangChain / LangGraph / DeepAgents integration — one patch on `BaseChatModel` |
 | `plugin` | the pytest integration |
 
+## Integration tests, recorded with LLMTivo itself
+
+`tests/integration/` calls **real** providers — OpenAI, Anthropic, Gemini, DeepSeek, Tavily and a
+live MCP server over stdio — and the tapes are committed. They replay in CI with **no keys and no
+network**, in about three seconds against forty-eight recording.
+
+```bash
+pytest tests/integration                    # replay: free, offline, no keys
+pytest tests/integration --llmtivo=record   # re-record. costs money, needs keys in .env
+```
+
+They are not excluded by default. Excluding them is how a suite stops noticing that a provider
+changed a response shape — and they found two defects that every fake had hidden:
+
+- **The LiteLLM seam replayed a string.** `litellm.completion` returns a `ModelResponse` object; a
+  cassette is JSON, so `default=str` wrote its repr and replay handed back text. The caller's next
+  line, `response["choices"][0]["message"]["content"]`, raised `TypeError: string indices must be
+  integers`. Every test using a fake `litellm` returned a plain dict and passed happily.
+- **Structured content drifted on replay.** Anthropic returns content as a *list of blocks*, and
+  the fingerprint canonicalised those with `str()` — the Python repr, whose dict key order is
+  insertion order. After a JSON round trip the keys came back in a different order, so a
+  multi-turn agent run drifted at the turn quoting a previous structured response: the model
+  behaved identically and the tape was thrown away anyway.
+
+Both are pinned by unit tests now, but neither was reachable without calling the real thing.
+
 ## Quality gate
 
 This project holds itself to the bar it would demand of generated code: **MFCQI >= 0.75**, enforced

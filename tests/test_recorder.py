@@ -327,3 +327,33 @@ def test_a_tool_call_is_addressed_by_its_name_and_arguments():
     assert a != b, "different arguments are a different question"
     assert a != c, "a different tool is a different question"
     assert a == fingerprint({"tool": "search", "args": {"q": "kotlin"}}), "and it is stable"
+
+
+def test_structured_content_fingerprints_the_same_after_a_json_round_trip():
+    """A message's content is not always a string. Anthropic returns a LIST OF BLOCKS for tool use,
+    and multimodal messages carry lists everywhere.
+
+    Canonicalising those with `str()` digests the Python repr, whose dict key order is INSERTION
+    order — so the same content, having been through JSON, orders its keys differently and hashes
+    differently. Every replayed multi-turn agent run then drifts at the turn that quotes a previous
+    structured response: the model behaved identically and the tape is thrown away anyway.
+    """
+    import json
+
+    from llmtivo.keys import fingerprint
+
+    live = [{"id": "t1", "caller": {"type": "direct"}, "input": {"city": "Lisbon"}, "type": "tool_use"}]
+    round_tripped = json.loads(json.dumps({"k": live}, sort_keys=True))["k"]
+    assert list(live[0]) != list(round_tripped[0]), "the keys must actually be reordered"
+
+    ask = lambda content: fingerprint({"model": "m", "messages": [{"role": "ai", "content": content}]})
+    assert ask(live) == ask(round_tripped), "key order changed the digest"
+
+
+def test_structured_content_still_distinguishes_different_content():
+    """Order-insensitivity must not become blindness: a different tool argument is a different
+    question, and reordering keys is the only thing that should be ignored."""
+    from llmtivo.keys import fingerprint
+
+    ask = lambda content: fingerprint({"model": "m", "messages": [{"role": "ai", "content": content}]})
+    assert ask([{"input": {"city": "Lisbon"}}]) != ask([{"input": {"city": "Porto"}}])
