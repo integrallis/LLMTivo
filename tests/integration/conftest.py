@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from llmtivo.modes import Mode
-from llmtivo.plugin import LLMTivo
 from llmtivo.store import CassetteStore, FileStore
+
+if TYPE_CHECKING:
+    from llmtivo.plugin import LLMTivo
 
 CASSETTES = Path(__file__).parent / "cassettes"
 
