@@ -175,7 +175,7 @@ jobs:
           python -c "from llmtivo.langchain import patched_langchain; print('✅ langchain seam')"
 
       - name: Install test dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --group integration
 
       - name: Reinstall package from Test PyPI (overwrite editable install)
         env:

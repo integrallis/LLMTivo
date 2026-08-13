@@ -105,7 +105,7 @@ jobs:
           )
 
       - name: Install test dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --group integration
 
       - name: Reinstall package from Test PyPI
         env:
@@ -207,7 +207,7 @@ jobs:
           echo "Minimum versions: $MIN_VERSIONS"
 
       - name: Install test dependencies
-        run: uv sync --group dev
+        run: uv sync --group dev --group integration
 
       - name: Install minimum dependency versions
         if: steps.min-versions.outputs.min-versions != ''
