@@ -117,12 +117,18 @@ jobs:
       - name: Upgrade setuptools with UV
         run: uv pip install --system "setuptools>=40.8.0" wheel
 
+      - name: Download the built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: test-dist
+          path: dist/
+
       - name: Install from Test PyPI
         env:
           VERSION: ${{ needs.build.outputs.version }}
         # Regular PyPI stays the PRIMARY index so dependencies resolve normally; Test PyPI is an
         # extra index carrying only the version under test. Test PyPI can lag, hence the retries.
-        run: scripts/pip_install_retry.sh "llmtivo[all]==$VERSION"
+        run: scripts/install_built_artifact.sh "$VERSION" '[all]' 
 
       - name: Verify package import and version
         env:
@@ -163,7 +169,7 @@ jobs:
       - name: Reinstall package from Test PyPI (overwrite editable install)
         env:
           VERSION: ${{ needs.build.outputs.version }}
-        run: scripts/pip_install_retry.sh "llmtivo==$VERSION" --force-reinstall --no-deps
+        run: scripts/install_built_artifact.sh "$VERSION" "" --force-reinstall --no-deps
 
       - name: Run the suite against the published package
         env:

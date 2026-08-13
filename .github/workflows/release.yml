@@ -88,13 +88,19 @@ jobs:
         run: |
           uv pip install --system "setuptools>=40.8.0" wheel
 
+      - name: Download the built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: test-dist
+          path: dist/
+
       - name: Install from Test PyPI
         env:
           VERSION: ${{ needs.test-release.outputs.version }}
         # Test PyPI propagates unevenly: a freshly published version can 404 on one runner while
         # resolving fine on another. A single 5s retry lost that race on macOS/3.11 and skipped the
         # real publish. Same backoff as the validate job.
-        run: scripts/pip_install_retry.sh "llmtivo[all]==$VERSION"
+        run: scripts/install_built_artifact.sh "$VERSION" '[all]' 
 
       - name: Install test dependencies
         run: uv sync --group dev --group integration
@@ -102,7 +108,7 @@ jobs:
       - name: Reinstall package from Test PyPI
         env:
           VERSION: ${{ needs.test-release.outputs.version }}
-        run: scripts/pip_install_retry.sh "llmtivo==$VERSION" --force-reinstall --no-deps
+        run: scripts/install_built_artifact.sh "$VERSION" "" --force-reinstall --no-deps
 
       - name: Run full test suite
         env:
@@ -149,13 +155,19 @@ jobs:
         run: |
           uv pip install --system "setuptools>=40.8.0" wheel
 
+      - name: Download the built distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: test-dist
+          path: dist/
+
       - name: Install from Test PyPI
         env:
           VERSION: ${{ needs.test-release.outputs.version }}
         # Test PyPI propagates unevenly: a freshly published version can 404 on one runner while
         # resolving fine on another. A single 5s retry lost that race on macOS/3.11 and skipped the
         # real publish. Same backoff as the validate job.
-        run: scripts/pip_install_retry.sh "llmtivo[all]==$VERSION"
+        run: scripts/install_built_artifact.sh "$VERSION" '[all]' 
 
       - name: Install tomli for pyproject parsing
         run: uv pip install --system tomli
