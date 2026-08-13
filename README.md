@@ -238,6 +238,23 @@ tape: [(1, 'model:scripted'), (2, 'lookup'), (3, 'model:scripted')]
 replay -> 3 replayed, tool ran again: NO, run reproduced identically
 ```
 
+### Embeddings
+
+A retrieval pipeline's model calls are mostly *not* chat calls. `OpenAIEmbeddings` is an
+`Embeddings`, not a `BaseChatModel`, so a chat-model seam misses it and a replayed RAG run keeps
+calling out — billed, non-deterministic, and silent, because the chat calls all replay and only the
+retrieval reaches the network. `patched_langchain` covers both.
+
+The base class is not the seam here: every concrete implementation *overrides* `embed_query` and
+friends, where `ChatAnthropic` inherits `invoke`. So the subclass tree is walked and each
+implementation patched, and only methods a class defines itself — an inherited one is covered once,
+at the parent.
+
+`embed_query` calls `embed_documents` underneath, and both are things an application calls directly,
+so both are intercepted and nesting is guarded: the outermost intercepted call records, the inner
+one passes through. That is general, not a per-library rule — it covers any layered API without
+having to know each library's internal delegation and re-check it every release.
+
 ## The network guard
 
 `REPLAY` raises on a miss **at the seam**. That covers every client LLMTivo was pointed at, and

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import threading
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from typing import Any
@@ -34,6 +35,30 @@ from llmtivo.recorder import IDENTITY, Codec, Recorder
 #: How a call's arguments become the request dict that gets fingerprinted and recorded.
 #: The default handles the common `invoke(messages, **kwargs)` shape.
 RequestBuilder = Callable[[Any, tuple[Any, ...], dict[str, Any]], dict[str, Any]]
+
+#: Recorders currently serving a call ON THIS THREAD.
+#:
+#: Public APIs are layered — `embed_query` calls `embed_documents`, `invoke` calls `run` — and both
+#: layers are things an application calls directly, so both must be intercepted. Without this, one
+#: `embed_query` records TWICE: the ordinals double and replay serves the inner recording to the
+#: outer caller. Picking a single layer per library instead would mean knowing every library's
+#: internal delegation and re-checking it on every release.
+_ACTIVE = threading.local()
+
+
+@contextmanager
+def _outermost(recorder: Recorder) -> Iterator[bool]:
+    """True when this is the OUTERMOST intercepted call for `recorder` on this thread."""
+    active: set[int] = getattr(_ACTIVE, "ids", None) or set()
+    _ACTIVE.ids = active
+    if id(recorder) in active:
+        yield False
+        return
+    active.add(id(recorder))
+    try:
+        yield True
+    finally:
+        active.discard(id(recorder))
 
 
 def default_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -101,31 +126,53 @@ def patched(
     # name: same-named variants differ in signature (bound vs plain, awaited vs yielded) and a
     # reader — or a type checker — cannot tell which one a branch installed.
     async def async_gen_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        request = build_request(self, args, kwargs)
-        async for chunk in recorder.astream(
-            request, lambda: original(self, *args, **kwargs), codec=codec
-        ):
-            yield chunk
+        with _outermost(recorder) as outer:
+            if not outer:
+                async for chunk in original(self, *args, **kwargs):
+                    yield chunk
+                return
+            request = build_request(self, args, kwargs)
+            async for chunk in recorder.astream(
+                request, lambda: original(self, *args, **kwargs), codec=codec
+            ):
+                yield chunk
 
     def gen_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        request = build_request(self, args, kwargs)
-        return recorder.stream(request, lambda: original(self, *args, **kwargs), codec=codec)
+        with _outermost(recorder) as outer:
+            if not outer:
+                return original(self, *args, **kwargs)
+            request = build_request(self, args, kwargs)
+            return recorder.stream(request, lambda: original(self, *args, **kwargs), codec=codec)
 
     async def async_method_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        request = build_request(self, args, kwargs)
-        return await recorder.acall(request, lambda: original(self, *args, **kwargs), codec=codec)
+        with _outermost(recorder) as outer:
+            if not outer:
+                return await original(self, *args, **kwargs)
+            request = build_request(self, args, kwargs)
+            return await recorder.acall(
+                request, lambda: original(self, *args, **kwargs), codec=codec
+            )
 
     async def async_function_wrapper(*args: Any, **kwargs: Any) -> Any:
-        request = build_request(None, args, kwargs)
-        return await recorder.acall(request, lambda: original(*args, **kwargs), codec=codec)
+        with _outermost(recorder) as outer:
+            if not outer:
+                return await original(*args, **kwargs)
+            request = build_request(None, args, kwargs)
+            return await recorder.acall(request, lambda: original(*args, **kwargs), codec=codec)
 
     def method_wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
-        request = build_request(self, args, kwargs)
-        return recorder.call(request, lambda: original(self, *args, **kwargs), codec=codec)
+        with _outermost(recorder) as outer:
+            if not outer:
+                return original(self, *args, **kwargs)
+            request = build_request(self, args, kwargs)
+            return recorder.call(request, lambda: original(self, *args, **kwargs), codec=codec)
 
     def function_wrapper(*args: Any, **kwargs: Any) -> Any:
-        request = build_request(None, args, kwargs)
-        return recorder.call(request, lambda: original(*args, **kwargs), codec=codec)
+        with _outermost(recorder) as outer:
+            if not outer:
+                return original(*args, **kwargs)
+            request = build_request(None, args, kwargs)
+            return recorder.call(request, lambda: original(*args, **kwargs), codec=codec)
 
     wrapper: Any
     if is_agen:

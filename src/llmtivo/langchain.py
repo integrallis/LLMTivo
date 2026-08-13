@@ -49,6 +49,12 @@ _METHODS = ("invoke", "ainvoke", "stream", "astream")
 #: still catches async tools.
 _TOOL_METHODS = ("invoke", "ainvoke")
 
+#: The embedding entry points. All four are OVERRIDDEN by concrete classes — unlike `BaseChatModel`,
+#: whose subclasses inherit `invoke` — so the base class is not the seam and each implementation has
+#: to be patched. `embed_query` delegates to `embed_documents` in the common implementation, which is
+#: why interception is re-entrancy-guarded rather than restricted to one layer.
+_EMBEDDING_METHODS = ("embed_documents", "embed_query", "aembed_documents", "aembed_query")
+
 #: Marks which message class a recorded payload came from, so replay rebuilds the same type. A
 #: chunk replayed as a whole message breaks `+` concatenation in streaming consumers.
 _TYPE_KEY = "__lc_class__"
@@ -96,6 +102,57 @@ def tool_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -
     if kwargs:
         request["kwargs"] = kwargs
     return request
+
+
+def embedding_request(
+    instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any]:
+    """The request dict for an EMBEDDING call.
+
+    Embeddings are model calls that are not chat models, so a chat-model seam misses them entirely
+    and a replayed RAG pipeline keeps calling out — billed, non-deterministic, and silent, because
+    the chat calls all replay and only the retrieval reaches the network.
+    """
+    texts = kwargs.get("texts") or kwargs.get("text")
+    if texts is None and args:
+        texts = args[0]
+    model = getattr(instance, "model", None) or getattr(instance, "model_name", None) or ""
+    return {
+        "embedding": True,
+        "model": str(model),
+        "texts": [texts] if isinstance(texts, str) else list(texts or []),
+    }
+
+
+def _embedding_targets() -> list[tuple[Any, ...]]:
+    """Every loaded `Embeddings` implementation, and the methods it actually defines.
+
+    Walks the subclass tree because the methods are overridden rather than inherited: patching the
+    abstract base would intercept nothing. Only methods a class defines ITSELF are patched, so a
+    subclass that inherits its parent's implementation is covered once, at the parent.
+    """
+    with contextlib.suppress(ImportError):
+        from langchain_core.embeddings import Embeddings
+
+        seen: set[type] = set()
+        targets: list[tuple[Any, ...]] = []
+
+        def walk(cls: type) -> None:
+            for sub in cls.__subclasses__():
+                if sub in seen:
+                    continue
+                seen.add(sub)
+                for name in _EMBEDDING_METHODS:
+                    if name in sub.__dict__:
+                        targets.append((sub, name, embedding_request))
+                walk(sub)
+
+        walk(Embeddings)
+        for name in _EMBEDDING_METHODS:  # the base's own defaults, for direct subclasses of it
+            if name in Embeddings.__dict__:
+                targets.append((Embeddings, name, embedding_request))
+        return targets
+    return []
 
 
 def _encode(response: Any) -> Any:
@@ -163,6 +220,8 @@ def patched_langchain(recorder: Recorder) -> Iterator[Recorder]:
         targets += [
             (BaseTool, name, tool_request) for name in _TOOL_METHODS if hasattr(BaseTool, name)
         ]
+
+    targets += _embedding_targets()
 
     with patched_all(
         targets, recorder, build_request=langchain_request, codec=MESSAGE_CODEC

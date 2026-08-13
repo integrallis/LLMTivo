@@ -99,6 +99,8 @@ def fingerprint(request: dict[str, Any]) -> str:
     }
     # added only when present, so a chat call's digest is unchanged by tools existing as a concept
     # — a gratuitous change here would invalidate every cassette already committed
+    if "texts" in request:  # an embedding: the texts ARE the question
+        material["texts"] = _stable(request.get("texts"))
     if "tool" in request:
         material["tool"] = str(request.get("tool", ""))
         material["args"] = _stable(request.get("args"))
