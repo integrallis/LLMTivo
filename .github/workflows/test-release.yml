@@ -123,8 +123,8 @@ jobs:
         # Regular PyPI stays the PRIMARY index so dependencies resolve normally; Test PyPI is an
         # extra index carrying only the version under test. Test PyPI can lag, hence the retries.
         run: |
-          for attempt in 1 2 3; do
-            echo "Attempt $attempt of 3..."
+          for attempt in 1 2 3 4 5; do
+            echo "Attempt $attempt of 5..."
             if uv pip install --system \
               --index-strategy unsafe-best-match \
               --extra-index-url https://test.pypi.org/simple/ \
@@ -132,13 +132,13 @@ jobs:
               echo "✅ Successfully installed llmtivo==$VERSION"
               exit 0
             fi
-            if [ $attempt -lt 3 ]; then
-              delay=$((attempt * 10))
+            if [ $attempt -lt 5 ]; then
+              delay=$((attempt * 15))
               echo "⏳ Install failed, waiting ${delay}s before retry..."
               sleep $delay
             fi
           done
-          echo "❌ Failed to install after 3 attempts"
+          echo "❌ Failed to install after 5 attempts"
           exit 1
 
       - name: Verify package import and version
