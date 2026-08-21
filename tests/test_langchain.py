@@ -296,6 +296,8 @@ def test_framework_injected_context_is_not_part_of_a_tools_identity():
 
     # a SECOND run: same question, a runtime whose repr differs in every byte that matters
     with patched_langchain(Recorder(store, "tool::runtime", mode=Mode.REPLAY)):
-        replayed = read_file.invoke({"file_path": "/skills/kmp/SKILL.md", "runtime": _Runtime("run-2")})
+        replayed = read_file.invoke(
+            {"file_path": "/skills/kmp/SKILL.md", "runtime": _Runtime("run-2")}
+        )
 
     assert replayed == live, "the tool drifted on framework plumbing, not on the question"
