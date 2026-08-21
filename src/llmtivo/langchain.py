@@ -84,12 +84,29 @@ def langchain_request(
     return request
 
 
+#: Parameters the FRAMEWORK injects, which are never part of what was asked. A tool that declares
+#: one (deepagents' file tools take a `ToolRuntime`) gets it delivered alongside the model's own
+#: arguments — and a `ToolRuntime` reprs the whole message state, message IDs included, which are
+#: fresh UUIDs every run. Fingerprinting them made such a tool drift from ITSELF between two
+#: identical runs: measured on a whole-build tape where every `read_file` call drifted and a
+#: 14-minute recording could not be replayed once.
+_INJECTED = ("runtime", "config", "callbacks", "run_manager", "state", "store", "tool_call_id")
+
+
+def _asked(payload: Any) -> Any:
+    """The arguments the MODEL chose, with the framework's delivery mechanism dropped."""
+    if not isinstance(payload, dict):
+        return payload
+    return {k: v for k, v in payload.items() if k not in _INJECTED}
+
+
 def tool_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
     """The request dict for a TOOL execution.
 
-    A tool call is addressed by the tool's name and the arguments it was given, both of which go
+    A tool call is addressed by the tool's NAME and the arguments it was given, both of which go
     into the fingerprint: different arguments are a different question, and the recorded answer must
-    not be served for them.
+    not be served for them. Framework-injected context (see `_INJECTED`) is how the call is
+    DELIVERED, not what was asked, and is excluded.
     """
     request: dict[str, Any] = {"tool": str(getattr(instance, "name", "") or "")}
     if args:
@@ -98,9 +115,11 @@ def tool_request(instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -
         # are what identifies the call either way
         if isinstance(payload, dict) and "args" in payload and "name" in payload:
             payload = payload["args"]
-        request["args"] = payload
+        request["args"] = _asked(payload)
     if kwargs:
-        request["kwargs"] = kwargs
+        scrubbed = _asked(kwargs)
+        if scrubbed:
+            request["kwargs"] = scrubbed
     return request
 
 

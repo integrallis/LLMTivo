@@ -263,3 +263,39 @@ def test_a_tool_defined_inside_the_code_under_test_is_covered():
         assert isinstance(built_later, BaseTool)
         built_later.invoke({"x": "y"})
     assert rec.stats.recorded == 1
+
+
+def test_framework_injected_context_is_not_part_of_a_tools_identity():
+    """A tool that declares a runtime/state parameter must still replay.
+
+    MEASURED on a whole-build tape: deepagents' file tools take a `ToolRuntime`, and LangChain hands
+    it in with the arguments. Its repr carries the entire message state, message IDs included — and
+    those are fresh UUIDs on every run. So the fingerprint of `read_file('/skills/.../SKILL.md')`
+    differed from itself between two identical runs, every tool call drifted, and a 14-minute
+    recording could not be replayed once.
+
+    The tool's identity is its NAME and the arguments the model chose. Runtime, config, callbacks and
+    the injected store are how the framework delivers the call, not what was asked.
+    """
+    store = MemoryStore()
+
+    class _Runtime:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def __repr__(self):  # what leaks into a fingerprint
+            return f"ToolRuntime(state={{'id': '{self.tag}'}})"
+
+    @tool
+    def read_file(file_path: str) -> str:
+        """Read a file."""
+        return "contents of " + file_path
+
+    with patched_langchain(Recorder(store, "tool::runtime", mode=Mode.RECORD)):
+        live = read_file.invoke({"file_path": "/skills/kmp/SKILL.md", "runtime": _Runtime("run-1")})
+
+    # a SECOND run: same question, a runtime whose repr differs in every byte that matters
+    with patched_langchain(Recorder(store, "tool::runtime", mode=Mode.REPLAY)):
+        replayed = read_file.invoke({"file_path": "/skills/kmp/SKILL.md", "runtime": _Runtime("run-2")})
+
+    assert replayed == live, "the tool drifted on framework plumbing, not on the question"
