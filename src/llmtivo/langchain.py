@@ -207,8 +207,47 @@ def _patched_embeddings(recorder: Recorder, stack: contextlib.ExitStack) -> Iter
             delattr(Embeddings, "__init_subclass__")
 
 
+#: LangGraph's `Command` — what a STATE-MUTATING tool returns instead of a value. It is a dataclass,
+#: so it has no `model_dump`, so it used to fall through to the tape as a plain dict and come back as
+#: one: `TypeError: Tool write_todos returned unexpected type: <class 'dict'>`. Its `update` holds
+#: graph state, which routinely contains messages, so encoding it means recursing.
+_COMMAND_KEY = "__lg_command__"
+
+
+def _encode_any(value: Any) -> Any:
+    """`value`, with every message inside it tagged for rebuilding. Containers are walked."""
+    if isinstance(value, dict):
+        return {k: _encode_any(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_any(v) for v in value]
+    return _encode(value)
+
+
+def _decode_any(value: Any) -> Any:
+    """The inverse of [_encode_any][llmtivo.langchain._encode_any]."""
+    if isinstance(value, dict):
+        if _TYPE_KEY in value:
+            return _decode(value)
+        return {k: _decode_any(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decode_any(v) for v in value]
+    return value
+
+
 def _encode(response: Any) -> Any:
-    """A message (or chunk) as a plain dict, tagged with the class to rebuild it as."""
+    """A message (or chunk) as a plain dict, tagged with the class to rebuild it as.
+
+    A `Command` is tagged too, and its state walked, so a state-mutating tool replays as the TYPE the
+    graph requires rather than as the dict it serialises to.
+    """
+    if type(response).__name__ == "Command" and hasattr(response, "update"):
+        return {
+            _COMMAND_KEY: True,
+            "update": _encode_any(getattr(response, "update", None)),
+            "goto": _encode_any(getattr(response, "goto", None)),
+            "graph": getattr(response, "graph", None),
+            "resume": _encode_any(getattr(response, "resume", None)),
+        }
     dump = getattr(response, "model_dump", None)
     if dump is None:
         return response
@@ -223,6 +262,15 @@ def _decode(payload: Any) -> Any:
     An unrecognised class is returned as the raw dict rather than guessed at: handing back the wrong
     message type would fail later, somewhere unrelated to the cause.
     """
+    if isinstance(payload, dict) and payload.get(_COMMAND_KEY):
+        from langgraph.types import Command
+
+        return Command(
+            update=_decode_any(payload.get("update")),
+            goto=_decode_any(payload.get("goto")) or (),
+            graph=payload.get("graph"),
+            resume=_decode_any(payload.get("resume")),
+        )
     if not isinstance(payload, dict) or _TYPE_KEY not in payload:
         return payload
     from langchain_core import messages as lc_messages

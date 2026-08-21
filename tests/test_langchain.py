@@ -301,3 +301,41 @@ def test_framework_injected_context_is_not_part_of_a_tools_identity():
         )
 
     assert replayed == live, "the tool drifted on framework plumbing, not on the question"
+
+
+def test_a_state_mutating_tool_replays_as_a_Command_not_a_dict():
+    """LangGraph's `Command` is what a state-mutating tool returns instead of a value.
+
+    It is a dataclass, so it has no `model_dump`, so it fell through to the tape as a plain dict and
+    came back as one — `TypeError: Tool write_todos returned unexpected type: <class 'dict'>`, which
+    is what stopped a whole-build recording from replaying. Its `update` holds graph state, and that
+    routinely contains messages, so the round trip has to recurse."""
+    from langchain_core.messages import ToolMessage
+    from langgraph.types import Command
+
+    store = MemoryStore()
+
+    # NO `-> Command` annotation: @tool resolves the return annotation against MODULE globals, and
+    # this import is function-local. The tool's runtime return type is what is under test anyway.
+    @tool
+    def write_todos(todos: list[str]):
+        """Record a todo list."""
+        return Command(
+            update={
+                "todos": todos,
+                "messages": [ToolMessage(content="Updated todo list", tool_call_id="tc1")],
+            }
+        )
+
+    with patched_langchain(Recorder(store, "tool::command", mode=Mode.RECORD)):
+        live = write_todos.invoke({"todos": ["a", "b"], "tool_call_id": "tc1"})
+    assert isinstance(live, Command)
+
+    with patched_langchain(Recorder(store, "tool::command", mode=Mode.REPLAY)):
+        replayed = write_todos.invoke({"todos": ["a", "b"], "tool_call_id": "tc1"})
+
+    assert isinstance(replayed, Command), f"replayed as {type(replayed).__name__}, not Command"
+    assert replayed.update["todos"] == ["a", "b"]
+    inner = replayed.update["messages"][0]
+    assert isinstance(inner, ToolMessage), "a message inside the state came back as a dict"
+    assert inner.content == "Updated todo list"

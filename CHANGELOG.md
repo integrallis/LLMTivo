@@ -4,6 +4,18 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-21
+
+### Fixed
+
+- **A state-mutating tool replays as a `Command`, not as a dict.** LangGraph's `Command` is what a
+  tool returns when it updates graph state instead of producing a value. It is a dataclass, so it has
+  no `model_dump`, so it fell through to the tape as a plain dict and came back as one —
+  `TypeError: Tool write_todos returned unexpected type: <class 'dict'>`, which stopped a whole-build
+  recording from replaying at all. Its `update` carries graph state and that routinely contains
+  messages, so the round trip recurses: containers are walked and every message inside is tagged and
+  rebuilt. This is the RESPONSE half of the same family as 0.1.5, which fixed the REQUEST half.
+
 ## [0.1.5] - 2026-08-21
 
 ### Fixed
