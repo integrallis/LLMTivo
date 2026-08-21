@@ -160,3 +160,23 @@ def test_calls(llmtivo):
     result = pytester.runpytest("--llmtivo=replay", "-rA")
     result.assert_outcomes(passed=1)
     result.stdout.fnmatch_lines(["*never reached*"])
+
+
+def test_the_package_version_matches_pyproject():
+    """Two places hold the version, so they can disagree — and did.
+
+    `pyproject.toml` said 0.1.5 while `llmtivo.__version__` still said 0.1.4, the release workflow's
+    own check caught it (`AssertionError: 0.1.4 != 0.1.5`) and the PyPI publish never ran. That check
+    lives in CI, minutes away and after a tag has been cut; this one is a second away and runs on
+    every commit."""
+    import tomllib
+    from pathlib import Path
+
+    import llmtivo
+
+    pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text())["project"]["version"]
+    assert llmtivo.__version__ == declared, (
+        f"llmtivo.__version__ is {llmtivo.__version__} and pyproject.toml says {declared} — "
+        f"bump both, or the release fails after the tag is cut"
+    )
